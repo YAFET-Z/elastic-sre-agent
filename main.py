@@ -1,48 +1,19 @@
 import os
-import json
 import requests
-import time
 from dotenv import load_dotenv
 from elasticsearch import Elasticsearch
-from sentence_transformers import SentenceTransformer
 
 # Load Environment Variables
 load_dotenv()
 
 class GeminiBrain:
     """
-    A robust wrapper for the Gemini API using direct HTTP requests.
-    This bypasses library version issues and supports 'Auto-Discovery'.
+    Direct HTTP wrapper for Gemini (Generation).
     """
     def __init__(self, api_key):
         self.api_key = api_key
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-        self.model_url = self._discover_model()
-
-    def _discover_model(self):
-        print("🧠 [Brain] Initializing... Detecting available models...")
-        try:
-            response = requests.get(f"{self.base_url}/models?key={self.api_key}")
-            if response.status_code != 200: raise Exception(f"API Error: {response.text}")
-            
-            # Smart Selection Logic
-            models = response.json().get('models', [])
-            for m in models:
-                if 'generateContent' in m.get('supportedGenerationMethods', []):
-                    if 'flash' in m['name'] and '2.5' in m['name']: return self._build_url(m['name']) # Priority 1: Flash 2.5
-            for m in models:
-                if 'generateContent' in m.get('supportedGenerationMethods', []):
-                    if 'flash' in m['name']: return self._build_url(m['name']) # Priority 2: Flash 1.5
-            
-            # Fallback
-            return self._build_url("models/gemini-1.5-flash")
-        except Exception as e:
-            print(f"⚠️ [Brain] Auto-detect failed ({e}). Defaulting to Flash.")
-            return self._build_url("models/gemini-1.5-flash")
-
-    def _build_url(self, model_name):
-        print(f"✅ [Brain] Connected to: {model_name}")
-        return f"{self.base_url}/{model_name}:generateContent?key={self.api_key}"
+        self.model_url = f"{self.base_url}/models/gemini-2.5-flash:generateContent?key={self.api_key}"
 
     def think(self, prompt):
         headers = {'Content-Type': 'application/json'}
@@ -52,18 +23,42 @@ class GeminiBrain:
             if response.status_code == 200:
                 return response.json()['candidates'][0]['content']['parts'][0]['text']
             else:
+                # Fallback to older model if 2.5 fails
+                fallback_url = f"{self.base_url}/models/gemini-1.5-flash:generateContent?key={self.api_key}"
+                response = requests.post(fallback_url, headers=headers, json=data)
+                if response.status_code == 200:
+                     return response.json()['candidates'][0]['content']['parts'][0]['text']
                 return f"ERROR: {response.text}"
         except Exception as e:
             return f"CONNECTION ERROR: {e}"
 
 class ElasticTools:
     """
-    The 'Hands' of the Agent. Handles all interactions with the database.
+    The 'Hands' of the Agent. Now uses Google API for Embeddings (Lightweight).
     """
-    def __init__(self, cloud_id, api_key):
+    def __init__(self, cloud_id, api_key, gemini_key):
         print("🛠️ [Tools] Connecting to Elastic Cloud...")
         self.client = Elasticsearch(cloud_id=cloud_id, api_key=api_key)
-        self.embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        self.gemini_key = gemini_key
+        self.embed_url = f"https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key={self.gemini_key}"
+
+    def _get_embedding(self, text):
+        """Generates vector using Google API instead of local RAM"""
+        headers = {'Content-Type': 'application/json'}
+        data = {
+            "model": "models/text-embedding-004",
+            "content": {"parts": [{"text": text}]}
+        }
+        try:
+            response = requests.post(self.embed_url, headers=headers, json=data)
+            if response.status_code == 200:
+                return response.json()['embedding']['values']
+            else:
+                print(f"❌ Embedding Error: {response.text}")
+                return None
+        except Exception as e:
+            print(f"❌ Connection Error: {e}")
+            return None
 
     def fetch_latest_error(self):
         """Tool 1: Reads the logs"""
@@ -78,8 +73,10 @@ class ElasticTools:
         return f"{log['message']}\n{log.get('error.stack_trace', '')}"
 
     def search_codebase(self, query):
-        """Tool 2: Searches the code"""
-        vector = self.embedder.encode(query).tolist()
+        """Tool 2: Searches the code using Cloud Vectors"""
+        vector = self._get_embedding(query)
+        if not vector: return None
+        
         response = self.client.search(
             index="codebase-index",
             size=1,
@@ -95,59 +92,15 @@ class ElasticTools:
         return None
 
 class IncidentResponseAgent:
-    """
-    The Orchestrator. Manages the workflow between Brain and Tools.
-    """
     def __init__(self):
         self.brain = GeminiBrain(os.getenv("GEMINI_API_KEY"))
-        self.tools = ElasticTools(os.getenv("ELASTIC_CLOUD_ID"), os.getenv("ELASTIC_API_KEY"))
+        # Pass Gemini Key to tools for embedding
+        self.tools = ElasticTools(
+            os.getenv("ELASTIC_CLOUD_ID"), 
+            os.getenv("ELASTIC_API_KEY"),
+            os.getenv("GEMINI_API_KEY")
+        )
 
     def run(self):
-        print("\n🚀 AGENT STARTED: Monitoring System Health...\n" + "="*50)
-        
-        # Step 1: Check Logs
-        error = self.tools.fetch_latest_error()
-        if not error:
-            print("✅ System Healthy. No active incidents.")
-            return
-
-        print(f"🚨 ALERT DETECTED: {error.splitlines()[0]}")
-        
-        # Step 2: Retrieve Context
-        print("🔍 retrieving relevant code from Elastic...")
-        code_context = self.tools.search_codebase(error)
-        
-        if not code_context:
-            print("❌ Could not find relevant source code.")
-            return
-
-        print(f"📂 Context Found: {code_context['file_path']}")
-
-        # Step 3: Reason & Fix
-        print("🤔 Analyzing root cause and generating patch...")
-        prompt = f"""
-        You are a Site Reliability Engineer (SRE) Agent.
-        
-        INCIDENT REPORT:
-        - Error Message: {error}
-        - Suspected File: {code_context['file_path']}
-        
-        SOURCE CODE:
-        {code_context['content']}
-        
-        YOUR MISSION:
-        1. Explain why this error occurred (Root Cause).
-        2. Rewrite the code to fix the bug.
-        3. Explain your fix.
-        """
-        
-        solution = self.brain.think(prompt)
-        
-        print("\n" + "="*50)
-        print("🤖 AGENT REPORT")
-        print("="*50)
-        print(solution)
-
-if __name__ == "__main__":
-    agent = IncidentResponseAgent()
-    agent.run()
+        # ... (Keep existing run logic if running locally, but Streamlit uses individual methods)
+        pass
