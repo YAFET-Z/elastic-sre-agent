@@ -1,0 +1,22 @@
+# Python internals
+__pycache__/
+*.pyc
+
+# Virtual Environment
+venv/
+env/
+.venv/
+
+# SENSITIVE KEYS (Never upload these)
+.env
+
+# Temporary folders created by our scripts
+temp_repo/
+
+# IDE Settings (Optional, keeps repo clean)
+.vscode/
+.idea/
+
+# OS generated junk
+.DS_Store
+Thumbs.db
