@@ -2,3 +2,4 @@ elasticsearch
 sentence-transformers
 requests
 python-dotenv
+streamlit
