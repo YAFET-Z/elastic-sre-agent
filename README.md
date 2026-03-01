@@ -1,8 +1,7 @@
 # 🛡️ SRE-Agent: Autonomous Incident Response
 **An AI Agent that detects, diagnoses, and patches production crashes using Elasticsearch & Gemini.**
 
-## 📺 Demo Video
-[Link to your YouTube/Vimeo demo here]
+
 
 ## 🚀 Project Overview
 SRE-Agent is a multi-step AI agent built for the **Elasticsearch Agent Builder Hackathon 2026**. It automates "messy internal work" by bridging the gap between observability logs and code remediation.
