@@ -1,4 +1,5 @@
-elasticsearch
-requests
-python-dotenv
 streamlit
+elasticsearch
+python-dotenv
+requests
+gitpython

@@ -1,6 +1,6 @@
 import streamlit as st
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from main import IncidentResponseAgent
 from elasticsearch import Elasticsearch
 import os
@@ -13,7 +13,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for that "Hacker" feel
+# Custom CSS
 st.markdown("""
 <style>
     .stButton>button {
@@ -38,9 +38,9 @@ if "simulated_error" not in st.session_state:
 
 # --- HELPER: SIMULATE CRASH ---
 def inject_chaos():
-    """Injects a fake error into Elastic logs to simulate a crash."""
     client = st.session_state.agent.tools.client
-    timestamp = datetime.now().isoformat()
+    timestamp = datetime.now(timezone.utc).isoformat()
+    index_name = "hackathon-errors"
     
     error_log = {
         "@timestamp": timestamp,
@@ -55,14 +55,21 @@ def inject_chaos():
 jinja2.exceptions.TemplateNotFound: index.html"""
     }
     
-    client.index(index="logs-app-default", document=error_log)
-    st.session_state.simulated_error = True
-    st.toast("🔥 CRITICAL ERROR INJECTED!", icon="🔥")
+    try:
+        if not client.indices.exists(index=index_name):
+            client.indices.create(index=index_name)
+        client.index(index=index_name, document=error_log)
+        client.indices.refresh(index=index_name)
+        
+        st.session_state.simulated_error = True
+        st.toast("🔥 CRITICAL ERROR INJECTED!", icon="🔥")
+    except Exception as e:
+        st.error(f"Failed to inject chaos: {e}")
 
 def clear_system():
-    """Clears the session state."""
     st.session_state.simulated_error = False
     st.session_state.current_error = None
+    st.session_state.context = None
     st.rerun()
 
 # --- SIDEBAR ---
@@ -70,36 +77,27 @@ with st.sidebar:
     st.title("🛡️ SRE-Agent")
     st.markdown("Autonomous Incident Response System")
     st.markdown("---")
-    
     st.subheader("⚙️ Control Panel")
-    
-    # The Chaos Button
-    if st.button("🔥 Simulate Production Crash", type="secondary", help="Injects a fake error log into Elastic"):
+    if st.button("🔥 Simulate Production Crash", type="secondary"):
         inject_chaos()
-        
     st.markdown("---")
     if st.button("🔄 Reset System", type="primary"):
         clear_system()
-        
-    st.info("Built with Elastic Vector Search & Google Gemini 2.5")
+    st.info("Built with Elastic Vector Search & Google Gemini")
 
 # --- MAIN LAYOUT ---
 st.title("🚀 Mission Control")
 
-# Status Indicators
 col_stat1, col_stat2, col_stat3 = st.columns(3)
 with col_stat1:
     if st.session_state.simulated_error:
         st.error("SYSTEM STATUS: CRITICAL")
     else:
         st.success("SYSTEM STATUS: OPERATIONAL")
-
 with col_stat2:
     st.metric(label="Active Agents", value="1 Online")
-
 with col_stat3:
     st.metric(label="Mean Time to Recovery", value="< 10s")
-
 st.divider()
 
 # --- THE WORKFLOW ---
@@ -107,11 +105,9 @@ col1, col2 = st.columns([1.2, 1])
 
 with col1:
     st.subheader("📡 Live Log Stream")
-    
-    # 1. Scan Button
     if st.button("🔎 Scan Logs for Anomalies", type="primary", use_container_width=True):
         with st.spinner("Querying Elastic Observability..."):
-            time.sleep(1.5) # UX Delay
+            time.sleep(0.5) 
             error = st.session_state.agent.tools.fetch_latest_error()
             
             if error and st.session_state.simulated_error:
@@ -120,17 +116,15 @@ with col1:
                 with st.expander("View Stack Trace", expanded=True):
                     st.code(error, language="text")
             else:
-                st.success("✅ No critical errors found in the last 5 minutes.")
+                st.success("✅ No critical errors found.")
                 st.session_state.current_error = None
 
-    # 2. Context Retrieval (Only appears if error exists)
     if st.session_state.get("current_error"):
         st.markdown("###")
         st.subheader("🧠 Context Retrieval")
-        
         with st.status("Performing Root Cause Analysis...", expanded=True) as status:
             st.write("🔹 Vectorizing error message...")
-            time.sleep(1)
+            time.sleep(0.5)
             st.write("🔹 Querying `codebase-index` for matching patterns...")
             context = st.session_state.agent.tools.search_codebase(st.session_state.current_error)
             
@@ -145,28 +139,76 @@ with col1:
 with col2:
     if st.session_state.get("context"):
         st.subheader("🛠️ Auto-Remediation")
-        
         st.markdown(f"**Suspected File:** `{st.session_state.context['file_path']}`")
         with st.expander("View Broken Code", expanded=False):
             st.code(st.session_state.context['content'], language="python")
-            
         st.markdown("---")
         
-        if st.button("✨ Generate Patch with Gemini", type="primary", use_container_width=True):
-            prompt = f"""
-            You are an expert Senior SRE.
-            ERROR: {st.session_state.current_error}
-            FILE: {st.session_state.context['file_path']}
-            CODE: {st.session_state.context['content']}
+        if st.button("✨ Activate Agent Protocol", type="primary", use_container_width=True):
             
-            TASK:
-            1. Explain the root cause in 1 sentence.
-            2. Provide the FIXED Python code block.
-            """
-            
-            with st.spinner("Consulting Gemini 2.5 Brain..."):
-                solution = st.session_state.agent.brain.think(prompt)
+            # --- START AGENT WORKFLOW ---
+            with st.status("🤖 Agent at work...", expanded=True) as status:
+                st.write("🔹 Phase 1: Analyzing logic flow...")
                 
-            st.success("Patch Generated Successfully!")
-            st.markdown(solution)
-            st.balloons()
+                prompt = f"""
+                You are a Senior SRE.
+                ERROR: {st.session_state.current_error}
+                FILE: {st.session_state.context['file_path']}
+                CODE: {st.session_state.context['content']}
+                """
+                
+                # GET RESPONSE (Dict containing 'explanation' and 'code')
+                response_payload = st.session_state.agent.brain.think(prompt)
+                
+                # UNPACK
+                explanation = response_payload["explanation"]
+                raw_fix = response_payload["code"]
+                
+                st.write("✅ Patch Generated.")
+                time.sleep(0.5)
+
+                # STEP 2: SELF-HEALING LOOP
+                st.write("🔹 Phase 2: Running safety diagnostics...")
+                
+                attempt = 0
+                max_retries = 3
+                is_valid = False
+                final_code = raw_fix
+                
+                while attempt < max_retries:
+                    is_valid, message = st.session_state.agent.tools.check_syntax(final_code)
+                    if is_valid:
+                        st.write(message)
+                        break 
+                    else:
+                        st.warning(f"⚠️ Attempt {attempt+1}: Syntax Error. Self-correcting...")
+                        # In Mock mode, 'think' returns the dict again, so we extract code
+                        new_response = st.session_state.agent.brain.think("syntax error fix")
+                        final_code = new_response["code"]
+                        attempt += 1
+
+                if not is_valid:
+                    st.error("❌ Critical: Auto-repair failed.")
+                    st.stop()
+
+                # STEP 3: ACT
+                st.write("🔹 Phase 3: Drafting Incident Ticket...")
+                ticket = st.session_state.agent.tools.draft_jira_ticket(
+                    st.session_state.current_error,
+                    st.session_state.context['file_path'],
+                    final_code
+                )
+                st.write(f"✅ Ticket {ticket['id']} Created.")
+                status.update(label="Workflow Complete", state="complete", expanded=False)
+
+            # --- FINAL OUTPUT DISPLAY ---
+            st.success("Candidate Fix Ready for Review")
+            
+            # 1. DISPLAY THE EXPLANATION BOX
+            st.info(f"**🤖 Agent Report:**\n\n{explanation}")
+            
+            # 2. DISPLAY THE CODE
+            st.code(final_code, language="python")
+            
+            # 3. DISPLAY THE TICKET
+            st.info(f"🔗 **Jira Ticket Created:** [{ticket['id']}: {ticket['title']}](https://jira.atlassian.com) \n\nStatus: `{ticket['status']}`")
